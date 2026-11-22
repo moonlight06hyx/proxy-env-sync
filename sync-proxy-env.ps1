@@ -15,7 +15,9 @@ param(
     [string]$VergeDir = (Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'),
     [string]$NoProxy = 'localhost,127.0.0.1,::1,*.local',
     [string]$LogPath = (Join-Path $env:LOCALAPPDATA 'dsh-proxy-env-sync.log'),
-    [int]$FallbackPort = 7897
+    [int]$FallbackPort = 7897,
+    # -DryRun prints what it would do and touches nothing. Used by CI.
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -25,7 +27,9 @@ $profilesDir = Join-Path $VergeDir 'profiles'
 
 function Get-PortFromFile([string]$path) {
     if (-not (Test-Path $path)) { return $null }
-    $hit = Select-String -Path $path -Pattern '^\s*(?:verge_)?mixed-port:\s*(\d+)' | Select-Object -First 1
+    # Verge writes "verge_mixed_port:" in clash-verge.yaml and "mixed-port:" in
+    # a profile, so accept either separator.
+    $hit = Select-String -Path $path -Pattern '^\s*(?:verge_)?mixed[-_]port:\s*(\d+)' | Select-Object -First 1
     if ($hit -and $hit.Matches.Count -gt 0) { return [int]$hit.Matches[0].Groups[1].Value }
     return $null
 }
@@ -47,6 +51,15 @@ $port = Get-VergePort
 if (-not $port -or $port -lt 1 -or $port -gt 65535) { exit 0 }
 
 $want = "http://127.0.0.1:$port"
+
+if ($DryRun) {
+    $cur = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    $now = if ($cur) { [string]$cur.GetValue('HTTPS_PROXY', '') } else { '' }
+    if ($cur) { $cur.Close() }
+    Write-Output "would-set HTTPS_PROXY/HTTP_PROXY=$want NO_PROXY=$NoProxy (current=$now)"
+    exit 0
+}
+
 $changed = $false
 
 # Write HKCU\Environment directly instead of using

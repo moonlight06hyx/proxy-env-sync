@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every script
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Path . -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $bad = 1
+              Write-Host "::error file=$($_.Name)::$($errors[0].Message)"
+            } else {
+              Write-Host "ok  $($_.Name)"
+            }
+          }
+          if ($bad) { exit 1 }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Error, Warning
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+            exit 1
+          }
+          Write-Host 'no findings'
+
+      - name: Dry run against a fake Verge config
+        shell: pwsh
+        run: |
+          $fake = Join-Path $env:RUNNER_TEMP 'fake-verge'
+          New-Item -ItemType Directory -Path $fake -Force | Out-Null
+          Set-Content -Path (Join-Path $fake 'clash-verge.yaml') -Value 'verge_mixed_port: 12345' -Encoding utf8
+          $out = & ./sync-proxy-env.ps1 -DryRun -VergeDir $fake
+          Write-Host $out
+          if ("$out" -notmatch '127\.0\.0\.1:12345') { throw 'dry run did not pick up verge_mixed_port' }
+
+      - name: Dry run falls back to the newest profile file
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'profile-verge'
+          New-Item -ItemType Directory -Path (Join-Path $dir 'profiles') -Force | Out-Null
+          Set-Content -Path (Join-Path $dir 'profiles\p.yaml') -Value 'mixed-port: 8899' -Encoding utf8
+          $out = & ./sync-proxy-env.ps1 -DryRun -VergeDir $dir
+          Write-Host $out
+          if ("$out" -notmatch '127\.0\.0\.1:8899') { throw 'dry run did not read mixed-port from a profile' }
+
+      - name: Dry run falls back to the default port
+        shell: pwsh
+        run: |
+          $empty = Join-Path $env:RUNNER_TEMP 'empty-verge'
+          New-Item -ItemType Directory -Path $empty -Force | Out-Null
+          $out = & ./sync-proxy-env.ps1 -DryRun -VergeDir $empty
+          Write-Host $out
+          if ("$out" -notmatch '127\.0\.0\.1:7897') { throw 'dry run did not fall back to 7897' }

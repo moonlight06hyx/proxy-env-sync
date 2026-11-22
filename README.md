@@ -1,5 +1,7 @@
 # proxy-env-sync
 
+![ci](https://github.com/moonlight06hyx/proxy-env-sync/actions/workflows/ci.yml/badge.svg)
+
 **让「只认环境变量」的程序跟上 Clash Verge 的代理端口。**
 
 一个不到 100 行的 PowerShell 脚本 + 一个计划任务。不开 TUN、只用「系统代理」模式时，Antigravity 这类程序也能正常登录和联网。
@@ -118,6 +120,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ClearEnv
 ```
 
 如果你想要 `-Port` 这种显式参数，提 issue 或者自己加一行就好 —— 脚本本身是单文件、无依赖的。
+
+## 开发与测试
+
+脚本带 `-DryRun`：只打印「会写成什么」，不改任何东西。CI 用它验证三条读取路径：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-proxy-env.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-proxy-env.ps1 -DryRun -VergeDir C:\some\fake\verge
+```
+
+每次 push 到 `main`，GitHub Actions 会：
+
+1. 用 PowerShell 的 `Parser` 解析每个 `.ps1`（语法错就红）；
+2. 跑 `PSScriptAnalyzer`（Error/Warning 级别，配置见 `PSScriptAnalyzerSettings.psd1`）；
+3. 三个 dry-run 用例：`verge_mixed_port` 读取、`profiles\*.yaml` 里 `mixed-port` 的回退、读不到时的 7897 兜底。
+
+> 顺带一提：第二条用例真的抓到过 bug —— 早期正则只认 `mixed-port:`（连字符），而 Verge 实际写的是 `verge_mixed_port:`（下划线），本地只是因为真实端口恰好等于兜底值 7897 才「看起来正常」。
 
 ## 关于这个项目
 
