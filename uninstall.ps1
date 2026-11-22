@@ -31,7 +31,7 @@ if (Test-Path $dll) {
 if ($ClearEnv) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     foreach ($n in @('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY')) {
-        if ($key.GetValue($n, $null) -ne $null) {
+        if ($null -ne $key.GetValue($n, $null)) {
             $key.DeleteValue($n, $false)
             Write-Host "cleared  $n"
         }

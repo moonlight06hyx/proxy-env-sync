@@ -44,10 +44,11 @@ function Get-VergePort {
         $p = Get-PortFromFile $c.FullName
         if ($p) { return $p }
     }
-    return $FallbackPort
+    return $null
 }
 
 $port = Get-VergePort
+if (-not $port) { $port = $FallbackPort }
 if (-not $port -or $port -lt 1 -or $port -gt 65535) { exit 0 }
 
 $want = "http://127.0.0.1:$port"
