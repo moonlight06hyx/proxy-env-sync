@@ -30,29 +30,35 @@ Antigravity 的 `language_server.exe` 就是一个 Go 程序。于是会出现�
 
 ## 它做什么
 
-每 30 分钟（以及每次登录 Windows 时）跑一次：
+默认每 2 分钟（以及每次登录 Windows 时）跑一次：
 
 1. 从 Clash Verge 的配置里读出当前的混合端口
    - 主来源：`%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\clash-verge.yaml` 里的 `verge_mixed_port`
    - 回退：`profiles\*.yaml` 里按修改时间最新的 5 个文件，找 `mixed-port`
    - 兜底：`7897`
-2. 把用户环境变量对齐成
+2. 试着连一下 `127.0.0.1:<port>`（400 ms 超时）
+   - **端口在监听** → 把用户环境变量对齐成
 
-   ```
-   HTTPS_PROXY = http://127.0.0.1:<port>
-   HTTP_PROXY  = http://127.0.0.1:<port>
-   NO_PROXY    = localhost,127.0.0.1,::1,*.local
-   ```
+     ```
+     HTTPS_PROXY = http://127.0.0.1:<port>
+     HTTP_PROXY  = http://127.0.0.1:<port>
+     NO_PROXY    = localhost,127.0.0.1,::1,*.local
+     ```
 
+   - **端口没在监听**（Clash 没开，或刚换了端口）→ 把这几个变量删掉
 3. 值没变就直接退出（不写注册表、不广播）；变了才写 `HKCU\Environment`，再广播一次 `WM_SETTINGCHANGE`，让 Explorer 及之后启动的进程拿到新值。
 
-所以：**换节点、换机场、换订阅都不用管**。机场只影响订阅里的节点，本地端口不变。
+所以：**换节点、换机场、换订阅都不用管**。机场只影响订阅里的节点，本地端口不变；开着 Clash 时变量在，关掉 Clash 两分钟内变量自己消失。
+
+### 为什么不是一直写着
+
+代理端口关着的时候，把 `HTTPS_PROXY` 指过去比不设还糟：所有认环境变量的程序（WorkBuddy、Codex、各种 node 工具、Go 程序）都会往一个没人监听的端口连，连国内站点也跟着失败。这个脚本最初只写不清，就是这么把 WorkBuddy 和 Codex 弄断的——所以现在改成「端口活着才写、关了就删」，让环境变量跟着代理的开关走。
 
 ## 性能
 
 | 场景 | 耗时 | 说明 |
 |---|---|---|
-| 端口没变（绝大多数） | ≈ 0.2 s | 几乎全是 PowerShell 启动开销；一天 48 次，合计约 10 秒 CPU 时间 |
+| 端口没变（绝大多数） | ≈ 0.2 s | 几乎全是 PowerShell 启动开销；一天约 720 次，合计约 2.4 分钟 CPU，约占单核 0.1% |
 | 端口变了 | ≈ 0.4 s | 写一次注册表 + 一次广播（每个窗口最多等 100 ms） |
 | 常驻内存 | 0 | 无常驻进程；单次运行峰值约 44 MB，存活不到 1 秒 |
 
@@ -67,10 +73,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 `install.ps1` 会：
 
 - 预编译 `EnvBroadcast.dll`（省掉每次运行时 `Add-Type` 编译的几秒）
-- 注册计划任务 `proxy-env-sync`：登录时触发 + 每 30 分钟重复
+- 注册计划任务 `proxy-env-sync`：登录时触发 + 每 2 分钟重复
 - 立刻跑一次，打印结果
 
-参数：`-IntervalMinutes 30`、`-TaskName "proxy-env-sync"`。
+参数：`-IntervalMinutes 2`、`-TaskName "proxy-env-sync"`。
 
 ## 验证
 

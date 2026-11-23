@@ -2,11 +2,11 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 #
-# Optional: -IntervalMinutes 30   -TaskName "proxy-env-sync"
+# Optional: -IntervalMinutes 2    -TaskName "proxy-env-sync"
 
 param(
     [string]$TaskName = 'proxy-env-sync',
-    [int]$IntervalMinutes = 30
+    [int]$IntervalMinutes = 2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +16,7 @@ $dll = Join-Path $dir 'EnvBroadcast.dll'
 
 if (-not (Test-Path $script)) { throw "sync-proxy-env.ps1 not found next to install.ps1" }
 
-# Compile the broadcast helper once so the 30-minute runs never pay for csc.
+# Compile the broadcast helper once so the frequent runs never pay for csc.
 if (-not (Test-Path $dll)) {
     $sig = @'
 using System;
@@ -42,8 +42,10 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+# A second, time-based trigger carries the repetition: a logon trigger with a
+# Repetition tacked on has no start boundary, so the scheduler never plans the
+# next run.
 $once = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
-$trigger.Repetition = $once.Repetition
 
 $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
@@ -52,8 +54,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
-    -Description 'Keep HTTPS_PROXY/HTTP_PROXY pointed at the Clash Verge mixed port.' | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($trigger, $once) -Settings $settings `
+    -Description 'Publish HTTPS_PROXY/HTTP_PROXY only while the Clash Verge mixed port is actually listening.' | Out-Null
 
 Write-Host "registered task  $TaskName  (at logon, then every $IntervalMinutes min)"
 

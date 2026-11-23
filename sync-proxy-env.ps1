@@ -17,7 +17,9 @@ param(
     [string]$LogPath = (Join-Path $env:LOCALAPPDATA 'dsh-proxy-env-sync.log'),
     [int]$FallbackPort = 7897,
     # -DryRun prints what it would do and touches nothing. Used by CI.
-    [switch]$DryRun
+    [switch]$DryRun,
+    # -SkipPortCheck pretends the proxy is listening. Only for tests.
+    [switch]$SkipPortCheck
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -51,13 +53,33 @@ $port = Get-VergePort
 if (-not $port) { $port = $FallbackPort }
 if (-not $port -or $port -lt 1 -or $port -gt 65535) { exit 0 }
 
+function Test-ProxyPort([int]$p, [int]$timeoutMs = 400) {
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $task = $client.ConnectAsync('127.0.0.1', $p)
+        if (-not $task.Wait($timeoutMs)) { $client.Close(); return $false }
+        $ok = $client.Connected
+        $client.Close()
+        return $ok
+    } catch { return $false }
+}
+
+# Publish the variables only while a proxy really listens on that port. A
+# proxy URL pointing at a closed port is worse than no proxy at all: every
+# program that honours the variable then fails, domestic sites included. That
+# is what broke WorkBuddy and Codex while Clash Verge was closed.
+$live = if ($SkipPortCheck) { $true } else { Test-ProxyPort $port }
 $want = "http://127.0.0.1:$port"
 
 if ($DryRun) {
     $cur = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
     $now = if ($cur) { [string]$cur.GetValue('HTTPS_PROXY', '') } else { '' }
     if ($cur) { $cur.Close() }
-    Write-Output "would-set HTTPS_PROXY/HTTP_PROXY=$want NO_PROXY=$NoProxy (current=$now)"
+    if ($live) {
+        Write-Output "would-set HTTPS_PROXY/HTTP_PROXY=$want NO_PROXY=$NoProxy (current=$now)"
+    } else {
+        Write-Output "would-clear HTTPS_PROXY/HTTP_PROXY/NO_PROXY (current=$now)"
+    }
     exit 0
 }
 
@@ -69,15 +91,24 @@ $changed = $false
 # a single cheap broadcast below instead.
 $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
 if ($envKey) {
-    foreach ($name in @('HTTPS_PROXY', 'HTTP_PROXY')) {
-        if ([string]$envKey.GetValue($name, '') -ne $want) {
-            $envKey.SetValue($name, $want, 'String')
+    if ($live) {
+        foreach ($name in @('HTTPS_PROXY', 'HTTP_PROXY')) {
+            if ([string]$envKey.GetValue($name, '') -ne $want) {
+                $envKey.SetValue($name, $want, 'String')
+                $changed = $true
+            }
+        }
+        if ([string]$envKey.GetValue('NO_PROXY', '') -ne $NoProxy) {
+            $envKey.SetValue('NO_PROXY', $NoProxy, 'String')
             $changed = $true
         }
-    }
-    if ([string]$envKey.GetValue('NO_PROXY', '') -ne $NoProxy) {
-        $envKey.SetValue('NO_PROXY', $NoProxy, 'String')
-        $changed = $true
+    } else {
+        foreach ($name in @('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy')) {
+            if ($null -ne $envKey.GetValue($name, $null)) {
+                $envKey.DeleteValue($name, $false)
+                $changed = $true
+            }
+        }
     }
     $envKey.Close()
 }
@@ -108,7 +139,11 @@ $result = [UIntPtr]::Zero
 [void][EnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 100, [ref]$result)
 
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-"$stamp  proxy env -> $want" | Add-Content -Path $LogPath -Encoding UTF8
+if ($live) {
+    "$stamp  proxy env -> $want" | Add-Content -Path $LogPath -Encoding UTF8
+} else {
+    "$stamp  proxy env cleared (port $port closed)" | Add-Content -Path $LogPath -Encoding UTF8
+}
 if ((Get-Item $LogPath).Length -gt 51200) {
     $keep = Get-Content $LogPath -Tail 200
     Set-Content -Path $LogPath -Value $keep -Encoding UTF8
