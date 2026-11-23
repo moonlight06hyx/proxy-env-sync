@@ -54,5 +54,11 @@ foreach ($lnk in $targets) {
 }
 
 Write-Host ''
+$guardLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Antigravity shortcut guard.lnk'
+if (Test-Path $guardLnk) {
+    Remove-Item $guardLnk -Force
+    Write-Host "removed startup guard  $guardLnk"
+}
+
 Write-Host 'Uninstalled. Nothing global was ever written, so there is no environment'
 Write-Host 'cleanup to do; launch-antigravity.ps1 can be deleted safely.'

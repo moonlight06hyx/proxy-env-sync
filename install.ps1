@@ -97,6 +97,30 @@ if (-not $SkipShortcuts) {
     Write-Host "shortcuts updated: $done"
 }
 
+# 4. Shortcut guard. Antigravity rewrites its own pinned icon when it updates and
+#    points it straight back at Antigravity.exe, which silently skips the launcher
+#    (that happened on 2026-11-23). The launcher re-checks the icons on every
+#    launch; this startup entry covers the other case - a bad icon that was never
+#    clicked yet - by checking once per sign-in. No polling, no resident process.
+$guardName = 'Antigravity shortcut guard.lnk'
+$startup = [Environment]::GetFolderPath('Startup')
+$guardLnk = Join-Path $startup $guardName
+if (-not $SkipShortcuts) {
+    try {
+        $guardShell = New-Object -ComObject WScript.Shell
+        $guard = $guardShell.CreateShortcut($guardLnk)
+        $guard.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
+        $guard.Arguments = '"{0}" "{1}" -RepairOnly' -f $runner, $launcher
+        $guard.WorkingDirectory = $dir
+        $guard.IconLocation = "$AppPath,0"
+        $guard.Description = 'Point the Antigravity shortcuts at the proxy launcher once per sign-in.'
+        $guard.Save()
+        Write-Host "guard installed  $guardLnk"
+    } catch {
+        Write-Host "could not install $guardName : $($_.Exception.Message)"
+    }
+}
+
 Write-Host ''
 Write-Host 'Done. Start Antigravity the usual way (Start menu / taskbar); it now gets'
 Write-Host 'HTTPS_PROXY only when the Clash Verge mixed port is actually listening.'

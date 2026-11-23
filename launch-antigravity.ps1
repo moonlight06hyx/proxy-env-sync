@@ -40,7 +40,12 @@ param(
     [string]$LogPath = (Join-Path $env:LOCALAPPDATA 'antigravity-proxy-launch.log'),
 
     # -DryRun prints the decision and touches nothing.
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    # -RepairOnly checks the shortcuts and exits without starting anything. Use it
+    # at logon or from another program: it is how the guard runs when it is not
+    # going through the launcher itself.
+    [switch]$RepairOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,6 +119,64 @@ function Resolve-AppPath([string]$Given) {
     return $candidates[0]
 }
 
+function Get-ShortcutPaths {
+    $dirs = @(
+        (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
+        (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'),
+        (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch'),
+        (Join-Path $env:USERPROFILE 'Desktop'),
+        (Join-Path $env:PUBLIC 'Desktop')
+    )
+    foreach ($dir in $dirs) {
+        if (-not (Test-Path $dir)) { continue }
+        Get-ChildItem $dir -Filter 'Antigravity.lnk' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName }
+    }
+}
+
+# Antigravity rewrites its own pinned shortcut whenever it updates (it points the
+# icon straight back at Antigravity.exe, without the proxy variables). That is how
+# the launcher silently stopped being used on 2026-11-23. Repair the shortcuts each
+# time the launcher runs, and from -RepairOnly at logon / DSH start, so a bad icon
+# lasts at most one launch instead of until someone notices.
+function Set-ShortcutLinks([string]$RepoDir, [string]$Exe) {
+    $vbs = Join-Path $RepoDir 'run-hidden.vbs'
+    $script = Join-Path $RepoDir 'launch-antigravity.ps1'
+    if (-not (Test-Path $vbs) -or -not (Test-Path $script)) { return }
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    $wantArgs = '"{0}" "{1}"' -f $vbs, $script
+    $shell = $null
+    try { $shell = New-Object -ComObject WScript.Shell } catch { return }
+    foreach ($lnk in Get-ShortcutPaths) {
+        try {
+            $shortcut = $shell.CreateShortcut($lnk)
+            $target = [string]$shortcut.TargetPath
+            $args = [string]$shortcut.Arguments
+            if ($target -match 'wscript\.exe$' -and $args -like ('*' + (Split-Path $script -Leaf) + '*')) { continue }
+            $shortcut.TargetPath = $wscript
+            $shortcut.Arguments = $wantArgs
+            $shortcut.WorkingDirectory = $RepoDir
+            $shortcut.IconLocation = '{0},0' -f $Exe
+            $shortcut.Save()
+            Add-LaunchLog $LogPath ('repaired shortcut: {0}' -f $lnk)
+        } catch {
+            Add-LaunchLog $LogPath ('could not repair shortcut {0}: {1}' -f $lnk, $_.Exception.Message)
+        }
+    }
+}
+
+$exe = Resolve-AppPath $AppPath
+
+# Runs on every launch (and standalone with -RepairOnly), so a shortcut the app
+# rewrote during an update gets pointed back here before it is used again.
+if (-not $DryRun) {
+    Set-ShortcutLinks $PSScriptRoot $exe
+    if ($RepairOnly) {
+        Add-LaunchLog $LogPath 'shortcut check only, nothing started'
+        exit 0
+    }
+}
+
 $port = Get-VergePort $VergeDir
 if (-not $port) { $port = $FallbackPort }
 if (-not $port -or $port -lt 1 -or $port -gt 65535) {
@@ -123,7 +186,6 @@ if (-not $port -or $port -lt 1 -or $port -gt 65535) {
 
 $live = Test-ProxyPort $port
 $url = 'http://127.0.0.1:{0}' -f $port
-$exe = Resolve-AppPath $AppPath
 
 if ($DryRun) {
     if ($live) {

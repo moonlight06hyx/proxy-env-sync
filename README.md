@@ -51,6 +51,21 @@ Antigravity 的 `language_server.exe` 就是一个 Go 程序。于是会出现�
 
 所以：**换节点、换机场、换订阅都不用管**。机场只影响订阅里的节点，本地端口不变；端口变了下一个启动自动跟上。
 
+### 图标守护（更新会把快捷方式改回去）
+
+Antigravity 自己更新的时候（2026-11-22 从 2.32.0 到 2.34.0 那次）会重建任务栏固定图标，把它指回 `Antigravity.exe --remote-debugging-port=9222`，于是启动器被绕过：`language_server` 直连，登录又卡在 `Post "https://oauth2.googleapis.com/token": EOF`。
+
+两道检查，都是静默的、不常驻：
+
+1. **每次启动**：`launch-antigravity.ps1` 开始前先检查开始菜单、任务栏固定、桌面上的 `Antigravity.lnk`，发现目标不是 `wscript.exe` 就改回来，日志里留一行 `repaired shortcut: …`。
+2. **每次登录**：启动文件夹里放一个 `Antigravity shortcut guard.lnk`，登录时跑一次 `launch-antigravity.ps1 -RepairOnly`，只修图标、不启动应用 —— 这样「更新后图标被改坏、但还没点过」的那段时间也不会踩坑。
+
+也可以随时手动体检：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch-antigravity.ps1 -RepairOnly
+```
+
 ### 为什么不是写全局环境变量
 
 这个仓库最初是「每 2 分钟把 `HTTPS_PROXY` 写进 `HKCU\Environment`」的设计。它有两个真问题：
