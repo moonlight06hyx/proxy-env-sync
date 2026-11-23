@@ -100,6 +100,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launch-antigravity.ps1 -Dr
 
 出现一片 `127.0.0.1` 就说明它在连本地代理端口。要确认 Antigravity 真的能过代理，登录一次看 `%APPDATA%\Antigravity\logs\language_server.log` 里有没有 `[auth-login] ... outcome=success`。
 
+## 实测：规则是怎么分流的
+
+系统代理开着（`ProxyEnable=1`、`ProxyServer=127.0.0.1:7897`）、Clash Verge 在跑，订阅里的规则是
+`geolocation-!cn → 机场` / `cn_domain → DIRECT` / `cn_ip → DIRECT` / `MATCH → 机场`。实测命中（原文来自 `logs\sidecar\sidecar_*.log`）：
+
+| 请求 | 命中 | 结果 |
+|---|---|---|
+| `www.workbuddy.cn` | `RuleSet(cn_domain)` | DIRECT |
+| `mcp-pan.baidu.com` | `RuleSet(cn_domain)` | DIRECT |
+| `daily-cloudcode-pa.googleapis.com`（Antigravity 换 token 走的就是它） | `RuleSet(geolocation-!cn)` | `三毛机场2.0[日本aws-1]` |
+| 不在国内规则里的中转站域名 | `MATCH` | 走机场；有的站不认这个出口，回 403 |
+
+### 系统代理这个开关到底影响谁
+
+| 场景 | Antigravity | Chrome / 微信 / WorkBuddy | Codex / cc-switch（reqwest、Go 一类） |
+|---|---|---|---|
+| Clash 在跑，系统代理开 | 走 7897，按规则分流 | 走 7897，按规则分流 | 不读系统代理 → 直连 |
+| Clash 在跑，系统代理关 | 走 7897（启动器注入），按规则分流 | 直连 | 直连 |
+| Clash 退出 | 直连（探测到端口关闭，不注入） | 直连 | 直连 |
+
+也就是说：「系统代理」开关决定**浏览器那类程序**走不走代理；Antigravity 走不走只看 `127.0.0.1:<port>` 在不在监听。
+
 ## 卸载
 
 ```powershell
