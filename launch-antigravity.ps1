@@ -45,18 +45,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Write-Log([string]$Message) {
-    if ($DryRun) { return }
+function Add-LaunchLog([string]$Path, [string]$Message) {
     try {
-        $dir = Split-Path -Parent $LogPath
+        $dir = Split-Path -Parent $Path
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $line = '{0} {1}' -f (Get-Date).ToString('s'), $Message
-        Add-Content -Path $LogPath -Value $line -Encoding UTF8
-        if ((Get-Item $LogPath).Length -gt 32768) {
-            $tail = Get-Content $LogPath -Tail 200
-            Set-Content -Path $LogPath -Value $tail -Encoding UTF8
+        Add-Content -Path $Path -Value $line -Encoding UTF8
+        if ((Get-Item $Path).Length -gt 32768) {
+            $tail = Get-Content $Path -Tail 200
+            Set-Content -Path $Path -Value $tail -Encoding UTF8
         }
-    } catch { }
+    } catch {
+        # A log write must never stop the launch.
+        Write-Verbose $_.Exception.Message
+    }
 }
 
 function Get-PortFromFile([string]$Path) {
@@ -68,11 +70,11 @@ function Get-PortFromFile([string]$Path) {
     return $null
 }
 
-function Get-VergePort {
-    $port = Get-PortFromFile (Join-Path $VergeDir 'clash-verge.yaml')
+function Get-VergePort([string]$Dir) {
+    $port = Get-PortFromFile (Join-Path $Dir 'clash-verge.yaml')
     if ($port) { return $port }
 
-    $profiles = Join-Path $VergeDir 'profiles'
+    $profiles = Join-Path $Dir 'profiles'
     if (Test-Path $profiles) {
         $newest = Get-ChildItem $profiles -Filter *.yaml -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 5
@@ -92,7 +94,9 @@ function Test-ProxyPort([int]$Port, [int]$TimeoutMs = 400) {
         $ok = $client.Connected
         $client.Close()
         return $ok
-    } catch { return $false }
+    } catch {
+        return $false
+    }
 }
 
 function Resolve-AppPath([string]$Given) {
@@ -110,10 +114,10 @@ function Resolve-AppPath([string]$Given) {
     return $candidates[0]
 }
 
-$port = Get-VergePort
+$port = Get-VergePort $VergeDir
 if (-not $port) { $port = $FallbackPort }
 if (-not $port -or $port -lt 1 -or $port -gt 65535) {
-    Write-Log 'no usable port, refusing to start'
+    if (-not $DryRun) { Add-LaunchLog $LogPath 'no usable port, refusing to start' }
     exit 0
 }
 
@@ -147,17 +151,17 @@ if ($live) {
     $env:HTTPS_PROXY = $url
     $env:HTTP_PROXY = $url
     $env:NO_PROXY = $NoProxy
-    Write-Log ('proxy on, port {0} is listening' -f $port)
+    Add-LaunchLog $LogPath ('proxy on, port {0} is listening' -f $port)
 } else {
-    Write-Log ('no proxy, port {0} is closed' -f $port)
+    Add-LaunchLog $LogPath ('no proxy, port {0} is closed' -f $port)
 }
 
 if (-not (Test-Path $exe)) {
-    Write-Log ('Antigravity.exe not found: {0}' -f $exe)
+    Add-LaunchLog $LogPath ('Antigravity.exe not found: {0}' -f $exe)
     exit 1
 }
 
 # Start-Process keeps this launcher short-lived and lets Antigravity run on its
 # own; the original shortcut passed --remote-debugging-port=0, so keep that.
 Start-Process -FilePath $exe -ArgumentList '--remote-debugging-port=0' -WorkingDirectory (Split-Path -Parent $exe)
-Write-Log 'started Antigravity'
+Add-LaunchLog $LogPath 'started Antigravity'
