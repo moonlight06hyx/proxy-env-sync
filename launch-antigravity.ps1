@@ -152,7 +152,7 @@ function Set-ShortcutLinks([string]$RepoDir, [string]$Exe) {
             $shortcut = $shell.CreateShortcut($lnk)
             $target = [string]$shortcut.TargetPath
             $currentArgs = [string]$shortcut.Arguments
-            if ($target -match 'wscript\.exe$' -and $args -like ('*' + (Split-Path $script -Leaf) + '*')) { continue }
+            if ($target -match 'wscript\.exe$' -and $currentArgs -like ('*' + (Split-Path $script -Leaf) + '*')) { continue }
             $shortcut.TargetPath = $wscript
             $shortcut.Arguments = $wantArgs
             $shortcut.WorkingDirectory = $RepoDir
