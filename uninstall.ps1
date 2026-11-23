@@ -1,43 +1,58 @@
-# uninstall.ps1 - removes the scheduled task (and optionally the proxy env vars).
+# uninstall.ps1 - restore the shortcuts and stop touching Antigravity's start.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 #
-# Add -ClearEnv to also delete HTTPS_PROXY / HTTP_PROXY / NO_PROXY from your
-# user environment. By default they are left alone, because other tools may be
-# using them already.
+# Restores Antigravity.lnk from the .lnk.bak copies install.ps1 made. If there is
+# no backup (the shortcut was created after install), it rewrites the shortcut to
+# point straight at Antigravity.exe with --remote-debugging-port=0.
+#
+# Optional: -AppPath "C:\...\Antigravity.exe"
 
+[CmdletBinding()]
 param(
-    [string]$TaskName = 'proxy-env-sync',
-    [switch]$ClearEnv
+    [string]$AppPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
-foreach ($name in @($TaskName, 'dsh-proxy-env-sync')) {
-    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $name -Confirm:$false
-        Write-Host "removed task  $name"
-    } else {
-        Write-Host "no such task  $name"
+if (-not $AppPath) {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\Antigravity.exe'),
+        (Join-Path $env:ProgramFiles 'Antigravity\Antigravity.exe')
+    )
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Antigravity\Antigravity.exe')
     }
+    $AppPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
-$dll = Join-Path $PSScriptRoot 'EnvBroadcast.dll'
-if (Test-Path $dll) {
-    Remove-Item $dll -Force
-    Write-Host "removed $dll"
+$targets = @(
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'Antigravity.lnk'),
+    (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Antigravity.lnk')
+)
+
+foreach ($lnk in $targets) {
+    if (-not (Test-Path $lnk)) { continue }
+    $backup = "$lnk.bak"
+    if (Test-Path $backup) {
+        Copy-Item $backup $lnk -Force
+        Remove-Item $backup -Force
+        Write-Host "restored  $lnk"
+        continue
+    }
+    if (-not $AppPath) {
+        Write-Host "no backup and no Antigravity.exe found, left alone: $lnk"
+        continue
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($lnk)
+    $shortcut.TargetPath = $AppPath
+    $shortcut.Arguments = '--remote-debugging-port=0'
+    $shortcut.WorkingDirectory = Split-Path -Parent $AppPath
+    $shortcut.Save()
+    Write-Host "repointed straight at the app  $lnk"
 }
 
-if ($ClearEnv) {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-    foreach ($n in @('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY')) {
-        if ($null -ne $key.GetValue($n, $null)) {
-            $key.DeleteValue($n, $false)
-            Write-Host "cleared  $n"
-        }
-    }
-    $key.Close()
-    Write-Host 'environment variables cleared (restart apps to see it)'
-} else {
-    Write-Host 'left HTTPS_PROXY / HTTP_PROXY / NO_PROXY as they are (-ClearEnv to delete them)'
-}
+Write-Host ''
+Write-Host 'Uninstalled. Nothing global was ever written, so there is no environment'
+Write-Host 'cleanup to do; launch-antigravity.ps1 can be deleted safely.'

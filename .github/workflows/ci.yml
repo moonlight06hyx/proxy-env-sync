@@ -40,15 +40,15 @@ jobs:
           }
           Write-Host 'no findings'
 
-      - name: Dry run against a fake Verge config
+      - name: Dry run reads verge_mixed_port
         shell: pwsh
         run: |
           $fake = Join-Path $env:RUNNER_TEMP 'fake-verge'
           New-Item -ItemType Directory -Path $fake -Force | Out-Null
           Set-Content -Path (Join-Path $fake 'clash-verge.yaml') -Value 'verge_mixed_port: 12345' -Encoding utf8
-          $out = & ./sync-proxy-env.ps1 -DryRun -SkipPortCheck -VergeDir $fake
+          $out = & ./launch-antigravity.ps1 -DryRun -VergeDir $fake
           Write-Host $out
-          if ("$out" -notmatch '127\.0\.0\.1:12345') { throw 'dry run did not pick up verge_mixed_port' }
+          if ("$out" -notmatch 'port 12345') { throw 'dry run did not pick up verge_mixed_port' }
 
       - name: Dry run falls back to the newest profile file
         shell: pwsh
@@ -56,15 +56,15 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP 'profile-verge'
           New-Item -ItemType Directory -Path (Join-Path $dir 'profiles') -Force | Out-Null
           Set-Content -Path (Join-Path $dir 'profiles\p.yaml') -Value 'mixed-port: 8899' -Encoding utf8
-          $out = & ./sync-proxy-env.ps1 -DryRun -SkipPortCheck -VergeDir $dir
+          $out = & ./launch-antigravity.ps1 -DryRun -VergeDir $dir
           Write-Host $out
-          if ("$out" -notmatch '127\.0\.0\.1:8899') { throw 'dry run did not read mixed-port from a profile' }
+          if ("$out" -notmatch 'port 8899') { throw 'dry run did not read mixed-port from a profile' }
 
       - name: Dry run falls back to the default port
         shell: pwsh
         run: |
           $empty = Join-Path $env:RUNNER_TEMP 'empty-verge'
           New-Item -ItemType Directory -Path $empty -Force | Out-Null
-          $out = & ./sync-proxy-env.ps1 -DryRun -SkipPortCheck -VergeDir $empty
+          $out = & ./launch-antigravity.ps1 -DryRun -VergeDir $empty
           Write-Host $out
-          if ("$out" -notmatch '127\.0\.0\.1:7897') { throw 'dry run did not fall back to 7897' }
+          if ("$out" -notmatch 'port 7897') { throw 'dry run did not fall back to 7897' }

@@ -1,66 +1,103 @@
-# install.ps1 - registers the scheduled task that keeps the proxy env in sync.
+# install.ps1 - point the Antigravity shortcuts at the proxied launcher.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 #
-# Optional: -IntervalMinutes 2    -TaskName "proxy-env-sync"
+# What it does:
+#   1. backs up the Start menu and taskbar shortcuts (.lnk -> .lnk.bak)
+#   2. rewrites both of them to: wscript.exe run-hidden.vbs launch-antigravity.ps1
+#   3. <redacted> proxy environment variables left behind from the
+#      older user-wide design, and tells Explorer about the change
+#
+# No scheduled task is created and nothing global is written: the proxy exists
+# only inside the Antigravity process tree that launch-antigravity.ps1 starts.
+#
+# Optional: -TaskName "proxy-env-sync"   (legacy task to remove, if present)
+#           -AppPath "C:\...\Antigravity.exe"
+#           -SkipShortcuts
 
+[CmdletBinding()]
 param(
     [string]$TaskName = 'proxy-env-sync',
-    [int]$IntervalMinutes = 2
+    [string]$AppPath = '',
+    [switch]$SkipShortcuts
 )
 
 $ErrorActionPreference = 'Stop'
+
 $dir = $PSScriptRoot
-$script = Join-Path $dir 'sync-proxy-env.ps1'
-$dll = Join-Path $dir 'EnvBroadcast.dll'
+$launcher = Join-Path $dir 'launch-antigravity.ps1'
+$runner = Join-Path $dir 'run-hidden.vbs'
 
-if (-not (Test-Path $script)) { throw "sync-proxy-env.ps1 not found next to install.ps1" }
+if (-not (Test-Path $launcher)) { throw "launch-antigravity.ps1 not found next to install.ps1" }
+if (-not (Test-Path $runner)) { throw "run-hidden.vbs not found next to install.ps1" }
 
-# Compile the broadcast helper once so the frequent runs never pay for csc.
-if (-not (Test-Path $dll)) {
-    $sig = @'
-using System;
-using System.Runtime.InteropServices;
-public class EnvBroadcast {
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+if (-not $AppPath) {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\Antigravity.exe'),
+        (Join-Path $env:ProgramFiles 'Antigravity\Antigravity.exe')
+    )
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Antigravity\Antigravity.exe')
+    }
+    $AppPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $AppPath) { $AppPath = $candidates[0] }
 }
-'@
-    Add-Type -TypeDefinition $sig -OutputAssembly $dll -OutputType Library
-    Write-Host "built  $dll"
+if (-not (Test-Path $AppPath)) {
+    throw "Antigravity.exe not found: $AppPath (pass -AppPath)"
 }
 
-# Replace any earlier copy of this task (including the pre-rename dsh- name).
-foreach ($old in @($TaskName, 'dsh-proxy-env-sync')) {
-    if (Get-ScheduledTask -TaskName $old -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $old -Confirm:$false
-        Write-Host "removed old task  $old"
+# 1. Remove the legacy global sync task. Its whole design was writing user-wide
+#    proxy variables, which is what broke WorkBuddy and Codex.
+$legacy = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($legacy) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "removed legacy scheduled task  $TaskName"
+}
+
+# 2. Clear the user-wide proxy variables the old task used to publish. Use
+#    SetEnvironmentVariable(...,'User') because it also broadcasts
+#    WM_SETTINGCHANGE; without that broadcast Explorer keeps the old block and
+#    every program started from it inherits the stale proxy.
+$cleared = 0
+foreach ($name in 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy') {
+    if ($null -ne [Environment]::GetEnvironmentVariable($name, 'User')) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'User')
+        $cleared++
     }
 }
+if ($cleared -gt 0) { Write-Host "cleared $cleared user-wide proxy variable(s)" }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
+# 3. Rewrite the shortcuts.
+if (-not $SkipShortcuts) {
+    $targets = @(
+        (Join-Path ([Environment]::GetFolderPath('Programs')) 'Antigravity.lnk'),
+        (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Antigravity.lnk')
+    )
 
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-# A second, time-based trigger carries the repetition: a logon trigger with a
-# Repetition tacked on has no start boundary, so the scheduler never plans the
-# next run.
-$once = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+    $shell = New-Object -ComObject WScript.Shell
+    $done = 0
+    foreach ($lnk in $targets) {
+        if (-not (Test-Path $lnk)) {
+            Write-Host "skip (not present)  $lnk"
+            continue
+        }
+        $backup = "$lnk.bak"
+        if (-not (Test-Path $backup)) { Copy-Item $lnk $backup -Force }
 
-$settings = New-ScheduledTaskSettingsSet `
-    -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
-    -StartWhenAvailable `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries
+        $shortcut = $shell.CreateShortcut($lnk)
+        $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
+        $shortcut.Arguments = '"{0}" "{1}"' -f $runner, $launcher
+        $shortcut.WorkingDirectory = $dir
+        $shortcut.IconLocation = "$AppPath,0"
+        $shortcut.Description = 'Antigravity (proxied launch)'
+        $shortcut.Save()
+        $done++
+        Write-Host "rewrote  $lnk"
+    }
+    Write-Host "shortcuts updated: $done"
+}
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($trigger, $once) -Settings $settings `
-    -Description 'Publish HTTPS_PROXY/HTTP_PROXY only while the Clash Verge mixed port is actually listening.' | Out-Null
-
-Write-Host "registered task  $TaskName  (at logon, then every $IntervalMinutes min)"
-
-# Run once so the current session is correct immediately.
-Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 3
-$info = Get-ScheduledTaskInfo -TaskName $TaskName
-Write-Host ("first run:  result={0}  last={1}" -f $info.LastTaskResult, $info.LastRunTime)
+Write-Host ''
+Write-Host 'Done. Start Antigravity the usual way (Start menu / taskbar); it now gets'
+Write-Host 'HTTPS_PROXY only when the Clash Verge mixed port is actually listening.'
+Write-Host "Decision log: $env:LOCALAPPDATA\antigravity-proxy-launch.log"

@@ -2,9 +2,9 @@
 
 ![ci](https://github.com/moonlight06hyx/proxy-env-sync/actions/workflows/ci.yml/badge.svg)
 
-**让「只认环境变量」的程序跟上 Clash Verge 的代理端口。**
+**让 Antigravity 在「只用系统代理、不开 TUN」的情况下也能登录。**
 
-一个不到 100 行的 PowerShell 脚本 + 一个计划任务。不开 TUN、只用「系统代理」模式时，Antigravity 这类程序也能正常登录和联网。
+一个启动器脚本：读 Clash Verge 的混合端口 → 探测端口是否在监听 → 只给即将启动的 Antigravity 进程带上 `HTTPS_PROXY`。不写全局环境变量，不建计划任务。
 
 ---
 
@@ -30,14 +30,14 @@ Antigravity 的 `language_server.exe` 就是一个 Go 程序。于是会出现�
 
 ## 它做什么
 
-默认每 2 分钟（以及每次登录 Windows 时）跑一次：
+把开始菜单 / 任务栏的 Antigravity 快捷方式改成先跑 `launch-antigravity.ps1`（经 `run-hidden.vbs`，不闪黑框）。启动时：
 
 1. 从 Clash Verge 的配置里读出当前的混合端口
    - 主来源：`%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\clash-verge.yaml` 里的 `verge_mixed_port`
    - 回退：`profiles\*.yaml` 里按修改时间最新的 5 个文件，找 `mixed-port`
    - 兜底：`7897`
 2. 试着连一下 `127.0.0.1:<port>`（400 ms 超时）
-   - **端口在监听** → 把用户环境变量对齐成
+   - **端口在监听** → 只在这次启动里注入
 
      ```
      HTTPS_PROXY = http://127.0.0.1:<port>
@@ -45,95 +45,83 @@ Antigravity 的 `language_server.exe` 就是一个 Go 程序。于是会出现�
      NO_PROXY    = localhost,127.0.0.1,::1,*.local
      ```
 
-   - **端口没在监听**（Clash 没开，或刚换了端口）→ 把这几个变量删掉
-3. 值没变就直接退出（不写注册表、不广播）；变了才写 `HKCU\Environment`，再广播一次 `WM_SETTINGCHANGE`，让 Explorer 及之后启动的进程拿到新值。
+     然后启动 `Antigravity.exe`（沿用原快捷方式的 `--remote-debugging-port=0`）。
+   - **端口没在监听**（Clash 没开）→ 不带任何代理变量启动，等于纯直连。
+3. 每次决定写一行日志：`proxy on, port 7897 is listening` / `no proxy, port 7897 is closed`。
 
-所以：**换节点、换机场、换订阅都不用管**。机场只影响订阅里的节点，本地端口不变；开着 Clash 时变量在，关掉 Clash 两分钟内变量自己消失。
+所以：**换节点、换机场、换订阅都不用管**。机场只影响订阅里的节点，本地端口不变；端口变了下一个启动自动跟上。
 
-### 为什么不是一直写着
+### 为什么不是写全局环境变量
 
-代理端口关着的时候，把 `HTTPS_PROXY` 指过去比不设还糟：所有认环境变量的程序（WorkBuddy、Codex、各种 node 工具、Go 程序）都会往一个没人监听的端口连，连国内站点也跟着失败。这个脚本最初只写不清，就是这么把 WorkBuddy 和 Codex 弄断的——所以现在改成「端口活着才写、关了就删」，让环境变量跟着代理的开关走。
+这个仓库最初是「每 2 分钟把 `HTTPS_PROXY` 写进 `HKCU\Environment`」的设计。它有两个真问题：
+
+1. **代理关着时更糟。** 端口没人监听，所有认环境变量的程序（WorkBuddy、Codex、各种 node 工具、Go 程序）都会往死端口连，连国内站点也跟着失败 —— 这一版把 WorkBuddy 和 Codex 弄断过。
+2. **改环境变量要广播。** 直接改注册表删值而不发 `WM_SETTINGCHANGE`，Explorer 会一直留着旧的一份，从开始菜单/托盘重开程序也没用，新进程继承的还是旧的。
+
+所以现在把代理作用域收到「Antigravity 这一棵进程树」，其他程序完全不受影响。
 
 ## 性能
 
-| 场景 | 耗时 | 说明 |
-|---|---|---|
-| 端口没变（绝大多数） | ≈ 0.2 s | 几乎全是 PowerShell 启动开销；一天约 720 次，合计约 2.4 分钟 CPU，约占单核 0.1% |
-| 端口变了 | ≈ 0.4 s | 写一次注册表 + 一次广播（每个窗口最多等 100 ms） |
-| 常驻内存 | 0 | 无常驻进程；单次运行峰值约 44 MB，存活不到 1 秒 |
+| 场景 | 影响 |
+|---|---|
+| 启动 Antigravity | 多一个 PowerShell 进程，约 0.3–0.5 s 后退出 |
+| 常驻 | 0 —— 没有后台进程、没有计划任务 |
+| 内存 | 单次启动峰值约 40 MB，随后回收 |
 
 ## 安装
 
 ```powershell
-git clone https://github.com/<you>/proxy-env-sync
+git clone https://github.com/moonlight06hyx/proxy-env-sync
 cd proxy-env-sync
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 `install.ps1` 会：
 
-- 预编译 `EnvBroadcast.dll`（省掉每次运行时 `Add-Type` 编译的几秒）
-- 注册计划任务 `proxy-env-sync`：登录时触发 + 每 2 分钟重复
-- 立刻跑一次，打印结果
+- 备份开始菜单与任务栏的 `Antigravity.lnk`（`.lnk.bak`），然后把它们指向 `wscript.exe run-hidden.vbs launch-antigravity.ps1`
+- 如果存在旧的 `proxy-env-sync` 计划任务，一并删掉
+- 清掉旧版留下的用户级 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`（用会广播的 API，Explorer 立刻拿到新环境）
 
-参数：`-IntervalMinutes 2`、`-TaskName "proxy-env-sync"`。
+参数：`-AppPath "C:\...\Antigravity.exe"`、`-SkipShortcuts`、`-TaskName "proxy-env-sync"`（要删的旧任务名）。
 
 ## 验证
 
 ```powershell
-# 环境变量
-Get-ItemProperty HKCU:\Environment -Name HTTPS_PROXY, HTTP_PROXY, NO_PROXY
+# 看这次启动做了什么决定
+Get-Content "$env:LOCALAPPDATA\antigravity-proxy-launch.log" -Tail 5
 
-# 任务状态与最后一次结果（0 = 成功；267009 = 正在运行）
-Get-ScheduledTaskInfo -TaskName proxy-env-sync
+# 不启动、只打印决定
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch-antigravity.ps1 -DryRun
 
-# 变更历史
-Get-Content "$env:LOCALAPPDATA\dsh-proxy-env-sync.log" -Tail 5
-```
-
-想看目标程序是否真的走了代理（Windows 10/11）：
-
-```powershell
+# 看 language_server 是否真的在连本地代理端口
 (Get-NetTCPConnection -OwningProcess (Get-Process language_server).Id -State Established).RemoteAddress |
   Group-Object | Sort-Object Count -Descending
 ```
 
-出现一片 `127.0.0.1` 就说明它在连本地代理端口。
+出现一片 `127.0.0.1` 就说明它在连本地代理端口。要确认 Antigravity 真的能过代理，登录一次看 `%APPDATA%\Antigravity\logs\language_server.log` 里有没有 `[auth-login] ... outcome=success`。
 
 ## 卸载
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
-# 连环境变量一起清掉：
-powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -ClearEnv
 ```
+
+从 `.lnk.bak` 还原快捷方式（没有备份就改成直指 `Antigravity.exe`）。因为从来不写全局变量，卸载没有环境变量要清。
 
 ## 注意事项
 
-- **改了端口要重启目标程序**：环境变量只在进程启动时读一次，跑着的进程不会自己刷新。
-- **它不改系统代理开关**。系统代理归 Clash Verge 管（建议在 Verge 里打开「系统代理」，让它自己维护注册表，否则 Verge 重启时可能把你的设置写回去）。
-- **只写 `HKCU`（当前用户）**，不需要管理员权限，也不影响其他用户。
-- **Clash Verge 专属**。换别的客户端，改 `-VergeDir`（配置所在目录）或用参数覆盖；端口读不到时用 `-FallbackPort`。
-- 日志会自己滚动：超过 50 KB 只保留最后 200 行。
-
-## 换个客户端怎么办
-
-脚本里端口来源只有一处 `Get-VergePort`。例如用 v2rayN / sing-box / mihomo 直接跑：
-
-```powershell
-# 手动指定端口，不读任何配置
-.\sync-proxy-env.ps1 ... # 目前没有 -Port 参数，最省事的做法是把 Get-VergePort 换成常量
-```
-
-如果你想要 `-Port` 这种显式参数，提 issue 或者自己加一行就好 —— 脚本本身是单文件、无依赖的。
+- **改了端口要重启 Antigravity**：环境变量只在进程启动时读一次。
+- **它不改系统代理开关**。系统代理归 Clash Verge 管（建议在 Verge 里打开「系统代理」，让它自己维护注册表）。
+- **只写当前进程的环境块**，不需要管理员权限，也不影响其他程序。
+- **Clash Verge 专属**。换别的客户端用 `-VergeDir` 指配置目录；读不到端口时用 `-FallbackPort`。
+- 日志会自己滚动：超过 32 KB 只保留最后 200 行。
 
 ## 开发与测试
 
-脚本带 `-DryRun`：只打印「会写成什么」，不改任何东西。CI 用它验证三条读取路径：
+`launch-antigravity.ps1 -DryRun` 只打印「会用哪个端口、带不带代理」，不启动任何程序。CI 用它验证三条端口读取路径：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-proxy-env.ps1 -DryRun
-powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-proxy-env.ps1 -DryRun -VergeDir C:\some\fake\verge
+.\launch-antigravity.ps1 -DryRun -VergeDir C:\some\fake\verge
 ```
 
 每次 push 到 `main`，GitHub Actions 会：
@@ -142,7 +130,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-proxy-env.ps1 -DryRun
 2. 跑 `PSScriptAnalyzer`（Error/Warning 级别，配置见 `PSScriptAnalyzerSettings.psd1`）；
 3. 三个 dry-run 用例：`verge_mixed_port` 读取、`profiles\*.yaml` 里 `mixed-port` 的回退、读不到时的 7897 兜底。
 
-> 顺带一提：第二条用例真的抓到过 bug —— 早期正则只认 `mixed-port:`（连字符），而 Verge 实际写的是 `verge_mixed_port:`（下划线），本地只是因为真实端口恰好等于兜底值 7897 才「看起来正常」。
+> 顺带一提：上一版的正则只认 `mixed-port:`（连字符），而 Verge 实际写的是 `verge_mixed_port:`（下划线），本地只是因为真实端口恰好等于兜底值 7897 才「看起来正常」—— 是 CI 抓出来的。
 
 ## 关于这个项目
 
