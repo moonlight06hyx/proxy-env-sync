@@ -44,6 +44,7 @@ function Add-WatchLog([string]$Path, [string]$Message) {
         }
     } catch {
         # logging must never take the watcher down
+        Write-Verbose ('log write failed: {0}' -f $_.Exception.Message)
     }
 }
 
@@ -78,8 +79,8 @@ function Invoke-RepairPass([string]$RepoDir, [string]$LogPath) {
     foreach ($lnk in Get-ShortcutPaths) {
         $shot = $shell.CreateShortcut($lnk)
         $target = [string]$shot.TargetPath
-        $args = [string]$shot.Arguments
-        $isLauncher = ($target -ieq $wscript) -and ($args -like ('*{0}*' -f 'launch-antigravity.ps1'))
+        $currentArgs = [string]$shot.Arguments
+        $isLauncher = ($target -ieq $wscript) -and ($currentArgs -like ('*{0}*' -f 'launch-antigravity.ps1'))
         if ($isLauncher) { continue }
         try {
             $shot.TargetPath = $wscript
@@ -88,7 +89,7 @@ function Invoke-RepairPass([string]$RepoDir, [string]$LogPath) {
             if (Test-Path $exe) { $shot.IconLocation = '{0},0' -f $exe }
             $shot.Save()
             $repaired += 1
-            Add-WatchLog $LogPath ('repaired shortcut: {0}  (was: {1} {2})' -f $lnk, $target, $args)
+            Add-WatchLog $LogPath ('repaired shortcut: {0}  (was: {1} {2})' -f $lnk, $target, $currentArgs)
         } catch {
             Add-WatchLog $LogPath ('could not repair {0}: {1}' -f $lnk, $_.Exception.Message)
         }
