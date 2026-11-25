@@ -60,5 +60,12 @@ if (Test-Path $guardLnk) {
     Write-Host "removed startup guard  $guardLnk"
 }
 
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { -not ($_.ProcessId -eq $PID) -and $_.CommandLine -like '*-File*shortcut-watch.ps1*' } |
+    ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        Write-Host "stopped shortcut watcher  pid $($_.ProcessId)"
+    }
+
 Write-Host 'Uninstalled. Nothing global was ever written, so there is no environment'
 Write-Host 'cleanup to do; launch-antigravity.ps1 can be deleted safely.'

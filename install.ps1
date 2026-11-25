@@ -97,25 +97,37 @@ if (-not $SkipShortcuts) {
     Write-Host "shortcuts updated: $done"
 }
 
-# 4. Shortcut guard. Antigravity rewrites its own pinned icon when it updates and
-#    points it straight back at Antigravity.exe, which silently skips the launcher
-#    (that happened on 2026-11-23). The launcher re-checks the icons on every
-#    launch; this startup entry covers the other case - a bad icon that was never
-#    clicked yet - by checking once per sign-in. No polling, no resident process.
+# 4. Shortcut guard. Antigravity rewrites its own Start-menu and taskbar icons every
+#    time it updates and points them straight back at Antigravity.exe, which bypasses
+#    the launcher and therefore loses HTTPS_PROXY (2.32 -> 2.34 did exactly that on
+#    2026-11-23). A launch-time repair cannot help the very launch that skipped us,
+#    and scheduled tasks are unavailable here, so the guard is a small resident
+#    watcher started at logon from the Startup folder: it polls the .lnk files every
+#    couple of seconds and rewrites a bad one before anyone clicks it.
 $guardName = 'Antigravity shortcut guard.lnk'
 $startup = [Environment]::GetFolderPath('Startup')
 $guardLnk = Join-Path $startup $guardName
+$watcher = Join-Path $dir 'shortcut-watch.ps1'
 if (-not $SkipShortcuts) {
     try {
         $guardShell = New-Object -ComObject WScript.Shell
         $guard = $guardShell.CreateShortcut($guardLnk)
         $guard.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-        $guard.Arguments = '"{0}" "{1}" -RepairOnly' -f $runner, $launcher
+        $guard.Arguments = '"{0}" "{1}"' -f $runner, $watcher
         $guard.WorkingDirectory = $dir
         $guard.IconLocation = "$AppPath,0"
-        $guard.Description = 'Point the Antigravity shortcuts at the proxy launcher once per sign-in.'
+        $guard.Description = 'Keep the Antigravity shortcuts on the proxy launcher, even after an update rewrites them.'
         $guard.Save()
         Write-Host "guard installed  $guardLnk"
+
+        # Restart the watcher now so the protection is live without a re-login.
+        Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+            Where-Object { -not ($_.ProcessId -eq $PID) -and $_.CommandLine -like '*-File*shortcut-watch.ps1*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        # explorer.exe is the parent on purpose: a process started from this shell
+        # dies with the caller's job object, and the watcher has to outlive us.
+        Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $guardLnk)
+        Write-Host 'guard running    (shortcut-watch.ps1)'
     } catch {
         Write-Host "could not install $guardName : $($_.Exception.Message)"
     }

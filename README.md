@@ -55,10 +55,12 @@ Antigravity 的 `language_server.exe` 就是一个 Go 程序。于是会出现�
 
 Antigravity 自己更新的时候（2026-11-22 从 2.32.0 到 2.34.0 那次）会重建任务栏固定图标，把它指回 `Antigravity.exe --remote-debugging-port=9222`，于是启动器被绕过：`language_server` 直连，登录又卡在 `Post "https://oauth2.googleapis.com/token": EOF`。
 
-两道检查，都是静默的、不常驻：
+两道检查：
 
 1. **每次启动**：`launch-antigravity.ps1` 开始前先检查开始菜单、任务栏固定、桌面上的 `Antigravity.lnk`，发现目标不是 `wscript.exe` 就改回来，日志里留一行 `repaired shortcut: …`。
-2. **每次登录**：启动文件夹里放一个 `Antigravity shortcut guard.lnk`，登录时跑一次 `launch-antigravity.ps1 -RepairOnly`，只修图标、不启动应用 —— 这样「更新后图标被改坏、但还没点过」的那段时间也不会踩坑。
+2. **常驻守卫**：启动文件夹里放一个 `Antigravity shortcut guard.lnk`，登录时拉起 `shortcut-watch.ps1`。它每 2 秒看一眼那几处 `.lnk` 的修改时间（只 stat，不读内容），一有变动就校验并改回来；另外每 10 分钟整体补一遍。实测从图标被改坏到修好约 **2 秒**（日志 `antigravity-shortcut-watch.log`）。
+
+守卫是这台机器上唯一常驻的东西：一个 `powershell.exe`，约 **85–95 MB** 内存，空闲时 CPU 基本为 0。之所以不能用计划任务，是因为这个账户建任务会被拒（`ERROR: Access is denied`），只能用启动文件夹。嫌占内存就 `uninstall.ps1`，改回「每次启动检查一次」——那两秒的空窗只在你更新完立刻点图标时才会踩到。
 
 也可以随时手动体检：
 
@@ -80,8 +82,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launch-antigravity.ps1 -Re
 | 场景 | 影响 |
 |---|---|
 | 启动 Antigravity | 多一个 PowerShell 进程，约 0.3–0.5 s 后退出 |
-| 常驻 | 0 —— 没有后台进程、没有计划任务 |
-| 内存 | 单次启动峰值约 40 MB，随后回收 |
+| 常驻 | 1 个 `shortcut-watch.ps1`（约 85–95 MB，只在装了图标守护时；`uninstall.ps1` 会停掉） |
+| 内存 | 启动器单次峰值约 40 MB，随后回收；常驻守卫见上 |
 
 ## 安装
 
